@@ -1,0 +1,66 @@
+services:
+
+  # ── 1. Сервис логирования (запускается первым, от него зависит model_server) ──
+  logger:
+    build:
+      context: ./logger
+      dockerfile: Dockerfile
+    container_name: fraud_logger
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./logs:/app/logs
+    environment:
+      LOG_FILE: /app/logs/requests.log
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── 2. Сервис модели ──────────────────────────────────────────────────────────
+  model_server:
+    build:
+      context: ./model_server
+      dockerfile: Dockerfile
+    container_name: fraud_model_server
+    ports:
+      - "8000:8000"
+    volumes:
+      # Путь к pkl-файлу модели относительно корня проекта
+      - ../best_xgb.pkl:/app/data/best_xgb.pkl:ro
+    environment:
+      MODEL_PATH: /app/data/best_xgb.pkl
+      LOGGER_URL: http://logger:8001/log
+      FRAUD_THRESHOLD: "0.5"
+    depends_on:
+      logger:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s  # модель загружается ~30-60 сек
+
+  # ── 3. Интерактивный клиент (запускается вручную через docker-compose run) ──
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: fraud_client
+    volumes:
+      # Путь к тестовым данным относительно корня проекта
+      - ../Prod_testing.pkl:/app/data/Prod_testing.pkl:ro
+    environment:
+      DATA_PATH: /app/data/Prod_testing.pkl
+      MODEL_SERVER_URL: http://model_server:8000
+    depends_on:
+      model_server:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    profiles:
+      - client  # запускается только явно: docker compose --profile client run client
